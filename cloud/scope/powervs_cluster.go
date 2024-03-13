@@ -1421,10 +1421,6 @@ func (s *PowerVSClusterScope) COSInstance() *infrav1beta2.CosInstance {
 
 // ReconcileCOSInstance reconcile COS bucket.
 func (s *PowerVSClusterScope) ReconcileCOSInstance() error {
-	if s.COSInstance() == nil || s.COSInstance().Name == "" {
-		return nil
-	}
-
 	// check COS service instance exist in cloud
 	cosServiceInstanceStatus, err := s.checkCOSServiceInstance()
 	if err != nil {
@@ -1453,14 +1449,10 @@ func (s *PowerVSClusterScope) ReconcileCOSInstance() error {
 	if !ok {
 		return fmt.Errorf("ibmcloud api key is not provided, set %s environmental variable", "IBMCLOUD_API_KEY")
 	}
-	region := s.IBMPowerVSCluster.Spec.CosInstance.BucketRegion
-	// if the bucket region is not set, use vpc region
-	if region == "" {
-		vpcDetails := s.VPC()
-		if vpcDetails == nil || vpcDetails.Region == nil {
-			return fmt.Errorf("failed to determine cos bucket region, both buckeet region and vpc region not set")
-		}
-		region = *vpcDetails.Region
+
+	region, regerr := s.bucketRegion()
+	if regerr != nil {
+		return regerr
 	}
 
 	serviceEndpoint := fmt.Sprintf("s3.%s.%s", region, cosURLDomain)
@@ -1504,7 +1496,7 @@ func (s *PowerVSClusterScope) ReconcileCOSInstance() error {
 }
 
 func (s *PowerVSClusterScope) checkCOSBucket() (bool, error) {
-	if _, err := s.COSClient.GetBucketByName(s.COSInstance().BucketName); err != nil {
+	if _, err := s.COSClient.GetBucketByName(s.bucketName()); err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
 			case s3.ErrCodeNoSuchBucket, "Forbidden", "NotFound":
@@ -1522,7 +1514,7 @@ func (s *PowerVSClusterScope) checkCOSBucket() (bool, error) {
 
 func (s *PowerVSClusterScope) createCOSBucket() error {
 	input := &s3.CreateBucketInput{
-		Bucket: pointer.String(s.COSInstance().BucketName),
+		Bucket: pointer.String(s.bucketName()),
 	}
 	_, err := s.COSClient.CreateBucket(input)
 	if err == nil {
@@ -1547,12 +1539,12 @@ func (s *PowerVSClusterScope) createCOSBucket() error {
 
 func (s *PowerVSClusterScope) checkCOSServiceInstance() (*resourcecontrollerv2.ResourceInstance, error) {
 	// check cos service instance
-	serviceInstance, err := s.ResourceClient.GetInstanceByName(s.COSInstance().Name, resourcecontroller.CosResourceID, resourcecontroller.CosResourcePlanID)
+	serviceInstance, err := s.ResourceClient.GetInstanceByName(*s.GetServiceName(infrav1beta2.ResourceTypeCOSInstance), resourcecontroller.CosResourceID, resourcecontroller.CosResourcePlanID)
 	if err != nil {
 		return nil, err
 	}
 	if serviceInstance == nil {
-		s.Info("cos service instance is nil", "name", s.COSInstance().Name)
+		s.Info("cos service instance is nil", "name", *s.GetServiceName(infrav1beta2.ResourceTypeCOSInstance))
 		return nil, nil
 	}
 	if *serviceInstance.State != string(infrav1beta2.ServiceInstanceStateActive) {
@@ -1976,4 +1968,27 @@ func (s *PowerVSClusterScope) isResourceCreatedByController(resourceType infrav1
 		return true
 	}
 	return false
+}
+
+func (s *PowerVSClusterScope) bucketName() string {
+	if s.COSInstance() == nil || s.COSInstance().BucketName == "" {
+		return fmt.Sprintf("%s-%s", *s.GetServiceName(infrav1beta2.ResourceTypeCOSInstance), "bucket")
+	}
+	return s.COSInstance().BucketName
+}
+
+func (s *PowerVSClusterScope) bucketRegion() (string, error) {
+	var region string
+	if s.COSInstance() != nil && s.COSInstance().BucketRegion != "" {
+		region = s.COSInstance().BucketRegion
+	}
+	// if the bucket region is not set, use vpc region
+	if region == "" {
+		vpcDetails := s.VPC()
+		if vpcDetails == nil || vpcDetails.Region == nil {
+			return "", fmt.Errorf("failed to determine cos bucket region, both buckeet region and vpc region not set")
+		}
+		region = *vpcDetails.Region
+	}
+	return region, nil
 }
